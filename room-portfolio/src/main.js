@@ -50,10 +50,10 @@ const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true});
 renderer.setSize( sizes.width, sizes.height );
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-const geometry = new THREE.BoxGeometry( 1, 1, 1 );
-const material = new THREE.MeshBasicMaterial( { color: 0x00ff00 } ); 
-const cube = new THREE.Mesh( geometry, material );
-scene.add( cube );
+// const geometry = new THREE.BoxGeometry( 1, 1, 1 );
+// const material = new THREE.MeshBasicMaterial( { color: 0x00ff00 } ); 
+// const cube = new THREE.Mesh( geometry, material );
+// scene.add( cube );
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
 scene.add(ambientLight);
@@ -84,8 +84,8 @@ window.addEventListener('resize', () => {
 const render = ( time ) => {
   controls.update();
 
-  cube.rotation.x = time / 2000;
-  cube.rotation.y = time / 1000;
+  // cube.rotation.x = time / 2000;
+  // cube.rotation.y = time / 1000;
 
   renderer.render( scene, camera );
   window.requestAnimationFrame( render );
