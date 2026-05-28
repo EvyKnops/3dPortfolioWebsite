@@ -13,6 +13,12 @@ const sizes = {
 
 const scene = new THREE.Scene();
 
+// iframe overlay variables (YouTube placeholder)
+let iframeEl = null;
+let anchorMesh = null;
+const iframeSize = { w: 720, h: 404 };
+const iframeVideoId = 'kWVFEVWJMz8'; // replace with actual YouTube ID
+
 //loaderss
 const textureLoader = new THREE.TextureLoader();
 
@@ -30,6 +36,45 @@ gltfLoader.load(
     const model = glb.scene;
     scene.add(model);
     console.log("GLTF loaded:", model);
+
+    // find a mesh that looks like a screen to attach the iframe to
+    function findScreenMesh(root) {
+      let found = null;
+      root.traverse((child) => {
+        if (child.isMesh) {
+          const name = (child.name || '').toLowerCase();
+          if (name.includes('screen') || name.includes('monitor') || name.includes('tv') || name.includes('display') || name.includes('panel')) {
+            found = child;
+          }
+        }
+      });
+      return found;
+    }
+
+    anchorMesh = findScreenMesh(model) || model;
+    if (anchorMesh && anchorMesh !== model) console.log('Anchoring iframe to mesh:', anchorMesh.name);
+    else console.log('No explicit screen mesh found; anchoring to model root.');
+
+    // create iframe and insert into #experience so it's positioned relative to the canvas
+    function createIframe(videoId) {
+      const container = document.getElementById('experience') || document.body;
+      iframeEl = document.createElement('iframe');
+      iframeEl.id = 'yt-iframe';
+      iframeEl.src = `https://www.youtube.com/embed/${videoId}`;
+      iframeEl.title = 'YouTube video';
+      iframeEl.frameBorder = '0';
+      iframeEl.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
+      iframeEl.allowFullscreen = true;
+      iframeEl.style.position = 'absolute';
+      iframeEl.style.transform = 'translate(-50%, -50%)';
+      iframeEl.style.pointerEvents = 'auto';
+      iframeEl.style.width = `${iframeSize.w}px`;
+      iframeEl.style.height = `${iframeSize.h}px`;
+      iframeEl.style.zIndex = '100';
+      container.appendChild(iframeEl);
+    }
+
+    createIframe(iframeVideoId);
   },
   undefined,
   (error) => {
@@ -86,6 +131,25 @@ const render = ( time ) => {
 
   // cube.rotation.x = time / 2000;
   // cube.rotation.y = time / 1000;
+
+  // update iframe position if attached
+  if (iframeEl && anchorMesh) {
+    const worldPos = new THREE.Vector3();
+    const distPos = new THREE.Vector3();
+    anchorMesh.getWorldPosition(worldPos);
+    worldPos.project(camera);
+    const x = (worldPos.x * 0.5 + 0.5) * sizes.width;
+    const y = (-worldPos.y * 0.5 + 0.5) * sizes.height;
+    iframeEl.style.left = `${x}px`;
+    iframeEl.style.top = `${y}px`;
+
+    // scale iframe by distance so it appears roughly the right size
+    anchorMesh.getWorldPosition(distPos);
+    const distance = camera.position.distanceTo(distPos);
+    const scale = Math.max(0.35, 2 / distance);
+    iframeEl.style.width = `${iframeSize.w * scale}px`;
+    iframeEl.style.height = `${iframeSize.h * scale}px`;
+  }
 
   renderer.render( scene, camera );
   window.requestAnimationFrame( render );
