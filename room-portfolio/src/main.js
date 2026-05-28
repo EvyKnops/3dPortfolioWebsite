@@ -60,7 +60,7 @@ gltfLoader.load(
       const container = document.getElementById('experience') || document.body;
       iframeEl = document.createElement('iframe');
       iframeEl.id = 'yt-iframe';
-      iframeEl.src = `https://www.youtube.com/embed/${videoId}`;
+      iframeEl.src = `https://threejs.org/manual/#en/installation`;
       iframeEl.title = 'YouTube video';
       iframeEl.frameBorder = '0';
       iframeEl.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
