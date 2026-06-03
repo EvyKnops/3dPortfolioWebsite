@@ -13,6 +13,7 @@ const sizes = {
 
 const scene = new THREE.Scene();
 
+// this one is the video in bottom right corner, figuring out how to add iframes to screen.
 // iframe overlay variables (YouTube placeholder)
 let iframeEl = null;
 let anchorMesh = null;
@@ -55,12 +56,14 @@ gltfLoader.load(
     if (anchorMesh && anchorMesh !== model) console.log('Anchoring iframe to mesh:', anchorMesh.name);
     else console.log('No explicit screen mesh found; anchoring to model root.');
 
+    //DIT IS NOG CHATGPT CODE, MOET NOG AANGEPAST WORDEN
+
     // create iframe and insert into #experience so it's positioned relative to the canvas
     function createIframe(videoId) {
       const container = document.getElementById('experience') || document.body;
       iframeEl = document.createElement('iframe');
       iframeEl.id = 'yt-iframe';
-      iframeEl.src = `https://threejs.org/manual/#en/installation`;
+      iframeEl.src = `https://2dportfoliowebsite-clbh.vercel.app/`;
       iframeEl.title = 'YouTube video';
       iframeEl.frameBorder = '0';
       iframeEl.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
@@ -143,7 +146,7 @@ const render = ( time ) => {
     iframeEl.style.left = `${x}px`;
     iframeEl.style.top = `${y}px`;
 
-    // scale iframe by distance so it appears roughly the right size
+    // scale iframe based on camera so it looks correct
     anchorMesh.getWorldPosition(distPos);
     const distance = camera.position.distanceTo(distPos);
     const scale = Math.max(0.35, 2 / distance);
