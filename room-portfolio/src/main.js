@@ -235,7 +235,7 @@ const camera = new THREE.PerspectiveCamera(
 );
 
 // sensible default starting position (x, y, z)
-camera.position.set(0, 1.6, 6);
+camera.position.set(5, 5, 8);
 
 const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true});
 renderer.setSize( sizes.width, sizes.height );
