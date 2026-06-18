@@ -24,13 +24,24 @@ cssRenderer.setSize(sizes.width, sizes.height);
 cssRenderer.domElement.style.position = 'absolute';
 cssRenderer.domElement.style.top = '0';
 cssRenderer.domElement.style.left = '0';
-// allow pointer events to pass through the CSS3D overlay so the WebGL canvas
-// (and OrbitControls) receive mouse input; individual CSS3D elements
-// (like the iframe) keep their own `pointer-events: auto` so they remain interactive
+// Allow the CSS3D root to receive pointer events so child elements (iframe)
+// can be interactive. We handle forwarding non-iframe events to the WebGL
+// canvas below, and disable OrbitControls while the pointer is over the iframe.
+// by default let pointer events pass to the WebGL canvas; when the iframe is
+// hovered we'll enable pointer events on the CSS3D root so the iframe can receive them
 cssRenderer.domElement.style.pointerEvents = 'none';
 cssRenderer.domElement.style.zIndex = '10';
 const experienceElement = document.getElementById('experience');
 if (experienceElement) experienceElement.appendChild(cssRenderer.domElement);
+
+// Allow iframe interaction while preserving orbit controls:
+// - When pointer is over the iframe, disable OrbitControls so iframe receives events.
+// - When pointer interacts with CSS3D but not the iframe, forward the pointer event to the WebGL canvas.
+function isEventOnIframe(e) {
+  return iframeEl && (e.target === iframeEl || iframeEl.contains(e.target));
+}
+
+// (Removed: forwarding pointer events to avoid pointer capture issues.)
 
 //loaderss
 const textureLoader = new THREE.TextureLoader();
@@ -80,6 +91,24 @@ gltfLoader.load(
 
       iframeEl = iframe;
       cssObject = new CSS3DObject(iframe);
+
+      // Make iframe focusable and add pointer enter/leave handlers to toggle controls
+      try {
+        iframeEl.style.pointerEvents = 'auto';
+        iframeEl.tabIndex = -1;
+        iframeEl.addEventListener('pointerenter', () => {
+          // enable CSS3D root so iframe receives events and disable orbit controls
+          cssRenderer.domElement.style.pointerEvents = 'auto';
+          if (controls) controls.enabled = false;
+        });
+        iframeEl.addEventListener('pointerleave', () => {
+          // restore pointerEvents so WebGL canvas receives events again
+          cssRenderer.domElement.style.pointerEvents = 'none';
+          if (controls) controls.enabled = true;
+        });
+      } catch (err) {
+        // if controls not yet defined or iframe cross-origin, ignore
+      }
 
       if (anchorMesh && anchorMesh.isMesh && anchorMesh.geometry) {
         anchorMesh.geometry.computeBoundingBox();
@@ -170,6 +199,27 @@ gltfLoader.load(
     } catch (err) {
       console.warn('Debug logging failed:', err);
     }
+
+    // collect clickable objects: anchorMesh and any meshes named like desk/monitor/table
+    try {
+      const names = ['monitor', 'screen', 'desk', 'table', 'computer', 'keyboard'];
+      scene.traverse((child) => {
+        if (child.isMesh) {
+          const nm = (child.name || '').toLowerCase();
+          for (const n of names) {
+            if (nm.includes(n)) {
+              clickableObjects.push(child);
+              console.log('Registered clickable mesh:', child.name);
+              break;
+            }
+          }
+        }
+      });
+      // always add anchorMesh if present
+      if (anchorMesh) clickableObjects.push(anchorMesh);
+    } catch (err) {
+      console.warn('Failed to populate clickable objects:', err);
+    }
   },
   undefined,
   (error) => {
@@ -184,7 +234,8 @@ const camera = new THREE.PerspectiveCamera(
   1000 
 );
 
-camera.position.z = 5;
+// sensible default starting position (x, y, z)
+camera.position.set(0, 1.6, 6);
 
 const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true});
 renderer.setSize( sizes.width, sizes.height );
@@ -204,7 +255,65 @@ scene.add(directionalLight);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
+// set default look target near the center ground so camera faces the room
+controls.target.set(0, 1.6, 0);
 controls.update();
+
+// store initial camera state so we can return later
+const initialCameraPosition = camera.position.clone();
+const initialCameraQuaternion = camera.quaternion.clone();
+const initialControlsTarget = controls.target.clone();
+
+// Raycaster for click interactions
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const clickableObjects = [];
+let pendingEnableCssFor = false;
+let domIframeOverlay = null;
+
+function updateDomIframeOverlay() {
+  if (!domIframeOverlay || !anchorMesh || !anchorMesh.geometry || !anchorMesh.geometry.boundingBox) return;
+  const bb = anchorMesh.geometry.boundingBox;
+  const corners = [
+    new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
+    new THREE.Vector3(bb.max.x, bb.min.y, bb.min.z),
+    new THREE.Vector3(bb.min.x, bb.max.y, bb.min.z),
+    new THREE.Vector3(bb.max.x, bb.max.y, bb.min.z),
+    new THREE.Vector3(bb.min.x, bb.min.y, bb.max.z),
+    new THREE.Vector3(bb.max.x, bb.min.y, bb.max.z),
+    new THREE.Vector3(bb.min.x, bb.max.y, bb.max.z),
+    new THREE.Vector3(bb.max.x, bb.max.y, bb.max.z),
+  ];
+  const ndcPoints = corners.map((c) => {
+    const wc = c.clone();
+    anchorMesh.localToWorld(wc);
+    wc.project(camera);
+    return { x: (wc.x * 0.5 + 0.5) * sizes.width, y: (-wc.y * 0.5 + 0.5) * sizes.height, z: wc.z };
+  });
+
+  // if all points are outside NDC [-1,1] or behind camera (z>1), hide overlay
+  const visible = ndcPoints.some(p => p.z >= -1 && p.z <= 1 && p.x >= -1000 && p.x <= sizes.width+1000 && p.y >= -1000 && p.y <= sizes.height+1000);
+  if (!visible) {
+    domIframeOverlay.style.display = 'none';
+    return;
+  }
+
+  const xs = ndcPoints.map(p => p.x);
+  const ys = ndcPoints.map(p => p.y);
+  const left = Math.min(...xs);
+  const right = Math.max(...xs);
+  const top = Math.min(...ys);
+  const bottom = Math.max(...ys);
+  const padding = 4;
+  domIframeOverlay.style.display = 'block';
+  domIframeOverlay.style.left = `${Math.round(left - padding)}px`;
+  domIframeOverlay.style.top = `${Math.round(top - padding)}px`;
+  domIframeOverlay.style.width = `${Math.max(10, Math.round(right - left + padding*2))}px`;
+  domIframeOverlay.style.height = `${Math.max(10, Math.round(bottom - top + padding*2))}px`;
+}
+
+// Populate clickableObjects once the model is loaded (we push anchorMesh and any desk/monitor-like meshes)
+
 
 //event listenerss
 window.addEventListener('resize', () => {
@@ -229,8 +338,185 @@ const render = ( time ) => {
   // cube.rotation.y = time / 1000;
 
   renderer.render( scene, camera );
+  // update DOM iframe overlay position each frame so it follows the monitor
+  try { updateDomIframeOverlay(); } catch (err) {}
   cssRenderer.render( scene, camera );
   window.requestAnimationFrame( render );
 }
 
 render();
+
+// ---- Click to move camera ----
+function easeInOutQuad(t) { return t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t; }
+
+function computeLookQuaternion(eyePos, targetPos) {
+  const m = new THREE.Matrix4();
+  m.lookAt(eyePos, targetPos, camera.up);
+  const q = new THREE.Quaternion();
+  q.setFromRotationMatrix(m);
+  return q;
+}
+
+function animateCameraTo(targetPos, lookAtPos, duration = 1200) {
+  const startPos = camera.position.clone();
+  const startQuat = camera.quaternion.clone();
+  const startTarget = controls.target.clone();
+
+  const endPos = targetPos.clone();
+  const endQuat = computeLookQuaternion(endPos, lookAtPos);
+  const endTarget = lookAtPos.clone();
+
+  const startTime = performance.now();
+  function step(now) {
+    const elapsed = now - startTime;
+    const t = Math.min(1, elapsed / duration);
+    const e = easeInOutQuad(t);
+
+    camera.position.lerpVectors(startPos, endPos, e);
+    camera.quaternion.slerpQuaternions(startQuat, endQuat, e);
+    controls.target.lerpVectors(startTarget, endTarget, e);
+    controls.update();
+
+    if (t < 1) requestAnimationFrame(step);
+    else {
+      // ensure controls are enabled after animation completes
+      controls.enabled = true;
+      controls.update();
+      // enable CSS3D root pointer events if requested (so iframe can receive input)
+      if (pendingEnableCssFor) {
+            console.log('Preparing DOM iframe overlay for interactivity; anchorMesh:', anchorMesh);
+            // hide CSS3D iframe to avoid wrapper intercepting clicks
+            try { if (cssObject && cssObject.element) cssObject.element.style.pointerEvents = 'none'; } catch (e) {}
+            // create or update a top-level DOM iframe overlay positioned over the mesh
+            try {
+              if (!domIframeOverlay) {
+                domIframeOverlay = document.createElement('iframe');
+                domIframeOverlay.style.position = 'absolute';
+                domIframeOverlay.style.border = '0';
+                domIframeOverlay.style.zIndex = '20';
+                domIframeOverlay.style.pointerEvents = 'auto';
+                domIframeOverlay.src = websiteURL;
+                const experience = document.getElementById('experience');
+                if (experience) experience.appendChild(domIframeOverlay);
+              }
+              // compute screen rect from anchorMesh bounding box
+              if (anchorMesh && anchorMesh.geometry && anchorMesh.geometry.boundingBox) {
+                const bb = anchorMesh.geometry.boundingBox;
+                const corners = [
+                  new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
+                  new THREE.Vector3(bb.max.x, bb.min.y, bb.min.z),
+                  new THREE.Vector3(bb.min.x, bb.max.y, bb.min.z),
+                  new THREE.Vector3(bb.max.x, bb.max.y, bb.min.z),
+                  new THREE.Vector3(bb.min.x, bb.min.y, bb.max.z),
+                  new THREE.Vector3(bb.max.x, bb.min.y, bb.max.z),
+                  new THREE.Vector3(bb.min.x, bb.max.y, bb.max.z),
+                  new THREE.Vector3(bb.max.x, bb.max.y, bb.max.z),
+                ];
+                const ndcPoints = corners.map((c) => {
+                  const wc = c.clone();
+                  anchorMesh.localToWorld(wc);
+                  wc.project(camera);
+                  return { x: (wc.x * 0.5 + 0.5) * sizes.width, y: (-wc.y * 0.5 + 0.5) * sizes.height };
+                });
+                const xs = ndcPoints.map(p => p.x);
+                const ys = ndcPoints.map(p => p.y);
+                const left = Math.min(...xs);
+                const right = Math.max(...xs);
+                const top = Math.min(...ys);
+                const bottom = Math.max(...ys);
+                const padding = 4; // small padding
+                domIframeOverlay.style.left = `${Math.round(left - padding)}px`;
+                domIframeOverlay.style.top = `${Math.round(top - padding)}px`;
+                domIframeOverlay.style.width = `${Math.round(right - left + padding*2)}px`;
+                domIframeOverlay.style.height = `${Math.round(bottom - top + padding*2)}px`;
+                console.log('DOM iframe overlay positioned at', domIframeOverlay.style.left, domIframeOverlay.style.top, domIframeOverlay.style.width, domIframeOverlay.style.height);
+              }
+            } catch (err) {
+              console.warn('Failed to create DOM iframe overlay:', err);
+            }
+            pendingEnableCssFor = false;
+      }
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+function moveCameraToObject(object) {
+  const worldPos = new THREE.Vector3();
+  object.getWorldPosition(worldPos);
+
+  // determine surface normal approximation: object's world direction
+  const normal = new THREE.Vector3();
+  object.getWorldDirection(normal);
+  // if normal is zero, fallback to camera-to-object direction
+  if (normal.lengthSq() < 1e-6) {
+    normal.copy(worldPos).sub(camera.position).normalize();
+  }
+  // rotate approach vector 90 degrees around Y so camera approaches from the side
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  normal.applyAxisAngle(yAxis, Math.PI / 2);
+  console.log('Rotated approach normal by 90deg:', normal);
+
+  const distance = 1.8; // desired distance from the screen
+  const desiredCameraPos = worldPos.clone().add(normal.multiplyScalar(distance));
+  // slightly raise camera to center the view
+  desiredCameraPos.y += 0.1;
+
+  // If this object is the anchorMesh (or a child of it), enable the iframe after moving
+  let enableIframeAfter = false;
+  if (anchorMesh) {
+    let cur = object;
+    while (cur) {
+      if (cur === anchorMesh) { enableIframeAfter = true; break; }
+      cur = cur.parent;
+    }
+  }
+  if (enableIframeAfter) pendingEnableCssFor = true;
+
+  animateCameraTo(desiredCameraPos, worldPos, 1000);
+}
+
+  // Debug: log pointer events on the CSS3D root
+  try {
+    cssRenderer.domElement.addEventListener('pointerdown', (e) => {
+      console.log('CSS3D root pointerdown target:', e.target, 'css root pointerEvents:', cssRenderer.domElement.style.pointerEvents);
+    });
+  } catch (err) {}
+
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(clickableObjects, true);
+  if (intersects.length > 0) {
+    const picked = intersects[0].object;
+    console.log('Clicked object:', picked.name || picked.id, 'moving camera to it');
+    moveCameraToObject(picked);
+  }
+});
+
+// Raycast on pointer move to detect when the cursor is over a clickable object
+// (only change cursor feedback here; enabling CSS3D pointer events is done
+// after camera animation completes to avoid intercepting clicks on the canvas)
+renderer.domElement.addEventListener('pointermove', (event) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(clickableObjects, true);
+  if (intersects.length > 0) {
+    renderer.domElement.style.cursor = 'pointer';
+  } else {
+    renderer.domElement.style.cursor = 'default';
+  }
+});
+
+// press Escape to return to initial camera
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    animateCameraTo(initialCameraPosition, initialControlsTarget, 1000);
+  }
+});
